@@ -1,5 +1,6 @@
 package com.bro.assistant
 
+import android.content.Context
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -17,7 +18,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
 
 data class ChatMessage(val text: String, val fromUser: Boolean)
 
@@ -25,19 +32,132 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            BroScreen()
+            BroApp()
+        }
+    }
+}
+
+fun getSavedApiKey(context: Context): String? {
+    val prefs = context.getSharedPreferences("bro_prefs", Context.MODE_PRIVATE)
+    return prefs.getString("gemini_api_key", null)
+}
+
+fun saveApiKey(context: Context, key: String) {
+    val prefs = context.getSharedPreferences("bro_prefs", Context.MODE_PRIVATE)
+    prefs.edit().putString("gemini_api_key", key).apply()
+}
+
+@Composable
+fun BroApp() {
+    val context = LocalContext.current
+    var apiKey by remember { mutableStateOf(getSavedApiKey(context)) }
+
+    if (apiKey.isNullOrBlank()) {
+        ApiKeyScreen(onSaved = { key ->
+            saveApiKey(context, key)
+            apiKey = key
+        })
+    } else {
+        BroScreen(apiKey = apiKey!!)
+    }
+}
+
+@Composable
+fun ApiKeyScreen(onSaved: (String) -> Unit) {
+    var keyInput by remember { mutableStateOf("") }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF14091F))
+            .padding(24.dp),
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(
+            text = "Enter your Gemini API key",
+            color = Color(0xFFB388FF),
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        TextField(
+            value = keyInput,
+            onValueChange = { keyInput = it },
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFF241536), RoundedCornerShape(12.dp)),
+            placeholder = { Text("Paste your API key here", color = Color(0xFF8A7A9B)) },
+            colors = TextFieldDefaults.colors(
+                focusedContainerColor = Color(0xFF241536),
+                unfocusedContainerColor = Color(0xFF241536),
+                focusedIndicatorColor = Color.Transparent,
+                unfocusedIndicatorColor = Color.Transparent,
+                focusedTextColor = Color.White,
+                unfocusedTextColor = Color.White
+            )
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        Button(
+            onClick = { if (keyInput.isNotBlank()) onSaved(keyInput.trim()) },
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7C4DFF))
+        ) {
+            Text("Save and continue")
+        }
+        Spacer(modifier = Modifier.height(12.dp))
+        Text(
+            text = "This is stored only on your phone, never uploaded anywhere.",
+            color = Color(0xFF8A7A9B),
+            fontSize = 12.sp
+        )
+    }
+}
+
+suspend fun askGemini(apiKey: String, userMessage: String): String {
+    return withContext(Dispatchers.IO) {
+        try {
+            val url = URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$apiKey")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.doOutput = true
+
+            val requestBody = JSONObject().apply {
+                put("contents", JSONArray().put(
+                    JSONObject().put("parts", JSONArray().put(
+                        JSONObject().put("text", userMessage)
+                    ))
+                ))
+            }
+
+            connection.outputStream.use { it.write(requestBody.toString().toByteArray()) }
+
+            val responseCode = connection.responseCode
+            if (responseCode != 200) {
+                val errorText = connection.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
+                return@withContext "Error ($responseCode): $errorText"
+            }
+
+            val responseText = connection.inputStream.bufferedReader().readText()
+            val json = JSONObject(responseText)
+            val candidates = json.getJSONArray("candidates")
+            val content = candidates.getJSONObject(0).getJSONObject("content")
+            val parts = content.getJSONArray("parts")
+            parts.getJSONObject(0).getString("text")
+        } catch (e: Exception) {
+            "Something went wrong: ${e.message}"
         }
     }
 }
 
 @Composable
-fun BroScreen() {
+fun BroScreen(apiKey: String) {
     val messages = remember {
         mutableStateListOf(
-            ChatMessage("Bro is online. Type something below.", fromUser = false)
+            ChatMessage("Bro is online. Ask me anything.", fromUser = false)
         )
     }
     var input by remember { mutableStateOf("") }
+    var isThinking by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
@@ -64,6 +184,11 @@ fun BroScreen() {
         ) {
             items(messages) { msg ->
                 ChatBubble(msg)
+            }
+            if (isThinking) {
+                item {
+                    ChatBubble(ChatMessage("Bro is thinking...", fromUser = false))
+                }
             }
         }
 
@@ -95,12 +220,16 @@ fun BroScreen() {
 
             Button(
                 onClick = {
-                    if (input.isNotBlank()) {
+                    if (input.isNotBlank() && !isThinking) {
                         val userText = input
                         messages.add(ChatMessage(userText, fromUser = true))
-                        messages.add(ChatMessage("You said: $userText", fromUser = false))
                         input = ""
+                        isThinking = true
                         scope.launch {
+                            listState.animateScrollToItem(messages.size)
+                            val reply = askGemini(apiKey, userText)
+                            isThinking = false
+                            messages.add(ChatMessage(reply, fromUser = false))
                             listState.animateScrollToItem(messages.size - 1)
                         }
                     }
