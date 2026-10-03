@@ -87,6 +87,7 @@ class MainActivity : ComponentActivity() {
 
         val prefs = getSharedPreferences("bro_prefs", Context.MODE_PRIVATE)
         apiKey.value = prefs.getString("api_key", "") ?: ""
+        teluguMode.value = prefs.getBoolean("telugu", false)
 
         tts = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
