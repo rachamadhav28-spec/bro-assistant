@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -58,6 +59,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -80,6 +82,7 @@ class MainActivity : ComponentActivity() {
     private val apiKey = mutableStateOf("")
     private val teluguMode = mutableStateOf(false)
     private val wakeMode = mutableStateOf(false)
+    private val serviceRunning = mutableStateOf(false)
     private var tts: TextToSpeech? = null
     private var recognizer: SpeechRecognizer? = null
     private var ttsReady = false
@@ -165,6 +168,23 @@ class MainActivity : ComponentActivity() {
         if (broState.value == BroState.LISTENING) broState.value = BroState.IDLE
     }
 
+    private fun hasNotificationPermission(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return true
+        return checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun startBroService() {
+        val intent = Intent(this, BroService::class.java)
+        ContextCompat.startForegroundService(this, intent)
+        serviceRunning.value = true
+    }
+
+    private fun stopBroService() {
+        stopService(Intent(this, BroService::class.java))
+        serviceRunning.value = false
+    }
+
     @Composable
     private fun BroScreen(prefs: android.content.SharedPreferences) {
         var keyInput by remember { mutableStateOf("") }
@@ -175,6 +195,12 @@ class MainActivity : ComponentActivity() {
             ActivityResultContracts.RequestPermission()
         ) { granted ->
             if (granted) startListening()
+        }
+
+        val notifPermissionLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { granted ->
+            if (granted) startBroService()
         }
 
         LaunchedEffect(messages.size) {
@@ -285,6 +311,26 @@ class MainActivity : ComponentActivity() {
                     Text(
                         if (wakeMode.value) "Hey Bro mode: ON (tap to turn off)"
                         else "Hey Bro mode: OFF (tap to turn on)"
+                    )
+                }
+
+                Button(
+                    onClick = {
+                        if (serviceRunning.value) {
+                            stopBroService()
+                        } else if (!hasMicPermission()) {
+                            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        } else if (!hasNotificationPermission()) {
+                            notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        } else {
+                            startBroService()
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+                ) {
+                    Text(
+                        if (serviceRunning.value) "Background listening: ON (tap to stop)"
+                        else "Background listening: OFF (tap to start)"
                     )
                 }
 
@@ -585,4 +631,4 @@ fun BroOrb(state: BroState, onClick: () -> Unit) {
             )
         }
     }
-}
+} 
