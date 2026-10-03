@@ -1,494 +1,423 @@
 package com.bro.assistant
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.*
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.rotate
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Locale
 
-data class ChatMessage(val text: String, val fromUser: Boolean)
-
 enum class BroState { IDLE, LISTENING, THINKING, SPEAKING }
 
+data class ChatMessage(val text: String, val fromUser: Boolean)
+
+private val BgColor = Color(0xFF14091F)
+private val Accent = Color(0xFF7C4DFF)
+private val AccentLight = Color(0xFFB388FF)
+
 class MainActivity : ComponentActivity() {
+
+    private val handler = Handler(Looper.getMainLooper())
+    private val broState = mutableStateOf(BroState.IDLE)
+    private val messages = mutableStateListOf<ChatMessage>()
+    private val apiKey = mutableStateOf("")
+    private var tts: TextToSpeech? = null
+    private var recognizer: SpeechRecognizer? = null
+    private var ttsReady = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent {
-            BroApp()
-        }
-    }
-}
 
-fun getSavedApiKey(context: Context): String? {
-    val prefs = context.getSharedPreferences("bro_prefs", Context.MODE_PRIVATE)
-    return prefs.getString("gemini_api_key", null)
-}
+        val prefs = getSharedPreferences("bro_prefs", Context.MODE_PRIVATE)
+        apiKey.value = prefs.getString("api_key", "") ?: ""
 
-fun saveApiKey(context: Context, key: String) {
-    val prefs = context.getSharedPreferences("bro_prefs", Context.MODE_PRIVATE)
-    prefs.edit().putString("gemini_api_key", key).apply()
-}
-
-@Composable
-fun BroApp() {
-    val context = LocalContext.current
-    var apiKey by remember { mutableStateOf(getSavedApiKey(context)) }
-
-    if (apiKey.isNullOrBlank()) {
-        ApiKeyScreen(onSaved = { key ->
-            saveApiKey(context, key)
-            apiKey = key
-        })
-    } else {
-        BroScreen(apiKey = apiKey!!)
-    }
-}
-
-@Composable
-fun ApiKeyScreen(onSaved: (String) -> Unit) {
-    var keyInput by remember { mutableStateOf("") }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color(0xFF14091F))
-            .padding(24.dp),
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text(
-            text = "Enter your Gemini API key",
-            color = Color(0xFFB388FF),
-            fontSize = 20.sp,
-            fontWeight = FontWeight.Bold
-        )
-        Spacer(modifier = Modifier.height(16.dp))
-        TextField(
-            value = keyInput,
-            onValueChange = { keyInput = it },
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Color(0xFF241536), RoundedCornerShape(12.dp)),
-            placeholder = { Text("Paste your API key here", color = Color(0xFF8A7A9B)) },
-            colors = TextFieldDefaults.colors(
-                focusedContainerColor = Color(0xFF241536),
-                unfocusedContainerColor = Color(0xFF241536),
-                focusedIndicatorColor = Color.Transparent,
-                unfocusedIndicatorColor = Color.Transparent,
-                focusedTextColor = Color.White,
-                unfocusedTextColor = Color.White
-            )
-        )
-        Spacer(modifier = Modifier.height(16.dp))
-        Button(
-            onClick = { if (keyInput.isNotBlank()) onSaved(keyInput.trim()) },
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7C4DFF))
-        ) {
-            Text("Save and continue")
-        }
-        Spacer(modifier = Modifier.height(12.dp))
-        Text(
-            text = "This is stored only on your phone, never uploaded anywhere.",
-            color = Color(0xFF8A7A9B),
-            fontSize = 12.sp
-        )
-    }
-}
-
-suspend fun askGemini(apiKey: String, userMessage: String): String {
-    return withContext(Dispatchers.IO) {
-        var attempts = 0
-        var lastError = "Unknown error"
-
-        while (attempts < 3) {
-            attempts++
-            try {
-                val url = URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent?key=$apiKey")
-                val connection = url.openConnection() as HttpURLConnection
-                connection.requestMethod = "POST"
-                connection.setRequestProperty("Content-Type", "application/json")
-                connection.doOutput = true
-
-                val requestBody = JSONObject().apply {
-                    put("contents", JSONArray().put(
-                        JSONObject().put("parts", JSONArray().put(
-                            JSONObject().put("text", userMessage)
-                        ))
-                    ))
-                }
-
-                connection.outputStream.use { it.write(requestBody.toString().toByteArray()) }
-
-                val responseCode = connection.responseCode
-                if (responseCode == 503 || responseCode == 429) {
-                    lastError = "Server busy (code $responseCode)"
-                    kotlinx.coroutines.delay(1500L * attempts)
-                    continue
-                }
-                if (responseCode != 200) {
-                    val errorText = connection.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
-                    return@withContext "Error ($responseCode): $errorText"
-                }
-
-                val responseText = connection.inputStream.bufferedReader().readText()
-                val json = JSONObject(responseText)
-                val candidates = json.getJSONArray("candidates")
-                val content = candidates.getJSONObject(0).getJSONObject("content")
-                val parts = content.getJSONArray("parts")
-                return@withContext parts.getJSONObject(0).getString("text")
-            } catch (e: Exception) {
-                lastError = "Something went wrong: ${e.message}"
-            }
-        }
-        "Bro couldn't reach the server after a few tries. ($lastError)"
-    }
-}
-
-@Composable
-fun BroOrb(state: BroState, modifier: Modifier = Modifier) {
-    val infiniteTransition = rememberInfiniteTransition(label = "orb")
-
-    val pulseDuration = when (state) {
-        BroState.IDLE -> 2200
-        BroState.LISTENING -> 700
-        BroState.THINKING -> 500
-        BroState.SPEAKING -> 350
-    }
-
-    val scale by infiniteTransition.animateFloat(
-        initialValue = 0.85f,
-        targetValue = 1.0f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(pulseDuration, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "scale"
-    )
-
-    val rotationAngle by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(if (state == BroState.THINKING) 1200 else 6000, easing = LinearEasing)
-        ),
-        label = "rotation"
-    )
-
-    val coreColor by animateColorAsState(
-        targetValue = when (state) {
-            BroState.IDLE -> Color(0xFF7C4DFF)
-            BroState.LISTENING -> Color(0xFFB388FF)
-            BroState.THINKING -> Color(0xFF9C6DFF)
-            BroState.SPEAKING -> Color(0xFFD1B3FF)
-        },
-        label = "color"
-    )
-
-    Box(
-        modifier = modifier.size(140.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val center = Offset(size.width / 2, size.height / 2)
-            val maxRadius = size.minDimension / 2
-
-            rotate(degrees = rotationAngle, pivot = center) {
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(coreColor.copy(alpha = 0.35f), Color.Transparent),
-                        center = center,
-                        radius = maxRadius
-                    ),
-                    radius = maxRadius * scale,
-                    center = center
-                )
-            }
-
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(coreColor, coreColor.copy(alpha = 0.6f)),
-                    center = center,
-                    radius = maxRadius * 0.55f
-                ),
-                radius = (maxRadius * 0.5f) * scale,
-                center = center
-            )
-        }
-    }
-}
-
-@Composable
-fun BroScreen(apiKey: String) {
-    val context = LocalContext.current
-    val messages = remember {
-        mutableStateListOf(
-            ChatMessage("Bro is online. Ask me anything.", fromUser = false)
-        )
-    }
-    var input by remember { mutableStateOf("") }
-    var broState by remember { mutableStateOf(BroState.IDLE) }
-    val listState = rememberLazyListState()
-    val scope = rememberCoroutineScope()
-
-    val tts = remember { mutableStateOf<TextToSpeech?>(null) }
-    DisposableEffect(Unit) {
-        val engine = TextToSpeech(context) { status ->
+        tts = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                tts.value?.language = Locale.US
-                tts.value?.setSpeechRate(1.0f)
-                tts.value?.setPitch(0.9f)
+                tts?.language = Locale.getDefault()
+                tts?.setSpeechRate(1.0f)
+                tts?.setPitch(1.0f)
+                tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) {}
+                    override fun onDone(utteranceId: String?) {
+                        handler.post { broState.value = BroState.IDLE }
+                    }
+                    @Deprecated("Deprecated in Java")
+                    override fun onError(utteranceId: String?) {
+                        handler.post { broState.value = BroState.IDLE }
+                    }
+                })
+                ttsReady = true
             }
         }
-        tts.value = engine
-        onDispose {
-            engine.stop()
-            engine.shutdown()
-        }
-    }
 
-    LaunchedEffect(tts.value) {
-        tts.value?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) {
-                broState = BroState.SPEAKING
+        setContent {
+            MaterialTheme(
+                colorScheme = darkColorScheme(
+                    primary = Accent,
+                    background = BgColor,
+                    surface = BgColor,
+                    onSurface = Color.White,
+                    onBackground = Color.White
+                )
+            ) {
+                BroScreen(prefs)
             }
-            override fun onDone(utteranceId: String?) {
-                broState = BroState.IDLE
-            }
-            override fun onError(utteranceId: String?) {
-                broState = BroState.IDLE
-            }
-        })
-    }
-
-    fun speak(text: String) {
-        tts.value?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "bro_reply")
-    }
-
-    fun sendMessage(userText: String) {
-        if (userText.isBlank()) return
-        messages.add(ChatMessage(userText, fromUser = true))
-        broState = BroState.THINKING
-        scope.launch {
-            listState.animateScrollToItem(messages.size)
-            val reply = askGemini(apiKey, userText)
-            messages.add(ChatMessage(reply, fromUser = false))
-            listState.animateScrollToItem(messages.size - 1)
-            speak(reply)
         }
     }
 
-    val speechRecognizer = remember {
-        if (SpeechRecognizer.isRecognitionAvailable(context)) {
-            SpeechRecognizer.createSpeechRecognizer(context)
-        } else null
+    @Composable
+    private fun BroScreen(prefs: android.content.SharedPreferences) {
+        var keyInput by remember { mutableStateOf("") }
+        var textInput by remember { mutableStateOf("") }
+        val listState = rememberLazyListState()
+
+        val permissionLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { granted ->
+            if (granted) startListening()
+        }
+
+        LaunchedEffect(messages.size) {
+            if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(BgColor)
+                .padding(16.dp)
+        ) {
+            if (apiKey.value.isEmpty()) {
+                Text("Welcome to Bro", color = AccentLight, style = MaterialTheme.typography.headlineMedium)
+                Text(
+                    "Paste your Gemini API key below. It is saved only on this phone.",
+                    color = Color.White,
+                    modifier = Modifier.padding(vertical = 12.dp)
+                )
+                OutlinedTextField(
+                    value = keyInput,
+                    onValueChange = { keyInput = it },
+                    label = { Text("Gemini API key") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Button(
+                    onClick = {
+                        val k = keyInput.trim()
+                        if (k.isNotEmpty()) {
+                            prefs.edit().putString("api_key", k).apply()
+                            apiKey.value = k
+                        }
+                    },
+                    modifier = Modifier.padding(top = 12.dp)
+                ) { Text("Save key") }
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(messages) { msg ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = if (msg.fromUser) Arrangement.End else Arrangement.Start
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .background(
+                                        if (msg.fromUser) Accent else Color(0xFF2A1A3F),
+                                        RoundedCornerShape(16.dp)
+                                    )
+                                    .padding(horizontal = 14.dp, vertical = 10.dp)
+                            ) {
+                                Text(msg.text, color = Color.White)
+                            }
+                        }
+                    }
+                }
+
+                Box(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    BroOrb(broState.value) {
+                        when (broState.value) {
+                            BroState.SPEAKING -> {
+                                tts?.stop()
+                                broState.value = BroState.IDLE
+                            }
+                            BroState.IDLE -> {
+                                if (ContextCompatCheck()) startListening()
+                                else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            }
+                            else -> {}
+                        }
+                    }
+                }
+
+                Text(
+                    when (broState.value) {
+                        BroState.IDLE -> "Tap the orb and talk"
+                        BroState.LISTENING -> "Listening..."
+                        BroState.THINKING -> "Thinking..."
+                        BroState.SPEAKING -> "Speaking... tap to stop"
+                    },
+                    color = AccentLight,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = textInput,
+                        onValueChange = { textInput = it },
+                        placeholder = { Text("Or type a message") },
+                        modifier = Modifier.weight(1f)
+                    )
+                    Button(
+                        onClick = {
+                            val t = textInput.trim()
+                            if (t.isNotEmpty() && broState.value == BroState.IDLE) {
+                                textInput = ""
+                                sendToBro(t)
+                            }
+                        },
+                        modifier = Modifier.padding(start = 8.dp)
+                    ) { Text("Send") }
+                }
+            }
+        }
     }
 
-    DisposableEffect(Unit) {
-        onDispose { speechRecognizer?.destroy() }
-    }
+    private fun ContextCompatCheck(): Boolean =
+        checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
-    fun startListening() {
-        if (speechRecognizer == null) {
-            Toast.makeText(context, "Voice input not available on this device", Toast.LENGTH_SHORT).show()
+    private fun startListening() {
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            messages.add(ChatMessage("Speech recognition isn't available on this phone.", false))
             return
+        }
+        if (recognizer == null) {
+            recognizer = SpeechRecognizer.createSpeechRecognizer(this)
+            recognizer?.setRecognitionListener(object : RecognitionListener {
+                override fun onReadyForSpeech(params: Bundle?) {}
+                override fun onBeginningOfSpeech() {}
+                override fun onRmsChanged(rmsdB: Float) {}
+                override fun onBufferReceived(buffer: ByteArray?) {}
+                override fun onEndOfSpeech() {}
+                override fun onError(error: Int) {
+                    broState.value = BroState.IDLE
+                }
+                override fun onResults(results: Bundle?) {
+                    val text = results
+                        ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        ?.firstOrNull()
+                    if (text.isNullOrBlank()) {
+                        broState.value = BroState.IDLE
+                    } else {
+                        sendToBro(text)
+                    }
+                }
+                override fun onPartialResults(partialResults: Bundle?) {}
+                override fun onEvent(eventType: Int, params: Bundle?) {}
+            })
         }
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.US)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
         }
-        speechRecognizer.setRecognitionListener(object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) { broState = BroState.LISTENING }
-            override fun onBeginningOfSpeech() { broState = BroState.LISTENING }
-            override fun onRmsChanged(rmsdB: Float) {}
-            override fun onBufferReceived(buffer: ByteArray?) {}
-            override fun onEndOfSpeech() { broState = BroState.THINKING }
-            override fun onError(error: Int) {
-                broState = BroState.IDLE
-            }
-            override fun onResults(results: Bundle?) {
-                val spokenText = results
-                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    ?.firstOrNull()
-                if (!spokenText.isNullOrBlank()) {
-                    sendMessage(spokenText)
+        broState.value = BroState.LISTENING
+        recognizer?.startListening(intent)
+    }
+
+    private fun sendToBro(text: String) {
+        messages.add(ChatMessage(text, true))
+        broState.value = BroState.THINKING
+        Thread {
+            val (ok, reply) = callGemini(text)
+            handler.post {
+                messages.add(ChatMessage(reply, false))
+                if (ok && ttsReady) {
+                    broState.value = BroState.SPEAKING
+                    tts?.setSpeechRate(1.0f)
+                    tts?.speak(reply, TextToSpeech.QUEUE_FLUSH, null, "bro_reply")
                 } else {
-                    broState = BroState.IDLE
+                    broState.value = BroState.IDLE
                 }
             }
-            override fun onPartialResults(partialResults: Bundle?) {}
-            override fun onEvent(eventType: Int, params: Bundle?) {}
-        })
-        speechRecognizer.startListening(intent)
+        }.start()
     }
 
-    val micPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) startListening()
-        else Toast.makeText(context, "Microphone permission is needed for voice input", Toast.LENGTH_SHORT).show()
-    }
-
-    fun onMicTapped() {
-        if (broState == BroState.LISTENING) {
-            speechRecognizer?.stopListening()
-            broState = BroState.IDLE
-            return
-        }
-        micPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color(0xFF14091F))
-    ) {
-        Text(
-            text = "Bro",
-            color = Color(0xFFB388FF),
-            fontSize = 22.sp,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(16.dp)
-        )
-
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 8.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            BroOrb(
-                state = broState,
-                modifier = Modifier.clickable { onMicTapped() }
+    private fun callGemini(prompt: String): Pair<Boolean, String> {
+        val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent"
+        val body = JSONObject().put(
+            "contents",
+            JSONArray().put(
+                JSONObject().put(
+                    "parts",
+                    JSONArray().put(JSONObject().put("text", prompt))
+                )
             )
-        }
+        ).toString()
 
-        Text(
-            text = when (broState) {
-                BroState.IDLE -> "Tap the orb to speak"
-                BroState.LISTENING -> "Listening..."
-                BroState.THINKING -> "Thinking..."
-                BroState.SPEAKING -> "Speaking..."
-            },
-            color = Color(0xFF8A7A9B),
-            fontSize = 13.sp,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 8.dp),
-            textAlign = TextAlign.Center
-        )
-
-        LazyColumn(
-            state = listState,
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            items(messages) { msg ->
-                ChatBubble(msg)
-            }
-            if (broState == BroState.THINKING) {
-                item {
-                    ChatBubble(ChatMessage("Bro is thinking...", fromUser = false))
+        var lastError = "Unknown error"
+        for (attempt in 1..3) {
+            try {
+                val conn = URL(url).openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.setRequestProperty("x-goog-api-key", apiKey.value)
+                conn.doOutput = true
+                conn.connectTimeout = 15000
+                conn.readTimeout = 30000
+                conn.outputStream.use { it.write(body.toByteArray()) }
+                val code = conn.responseCode
+                if (code == 200) {
+                    val raw = conn.inputStream.bufferedReader().readText()
+                    val text = JSONObject(raw)
+                        .getJSONArray("candidates")
+                        .getJSONObject(0)
+                        .getJSONObject("content")
+                        .getJSONArray("parts")
+                        .getJSONObject(0)
+                        .getString("text")
+                    return Pair(true, text.trim())
                 }
+                lastError = "Error code $code"
+                if (code == 503 || code == 429) {
+                    Thread.sleep(1500L * attempt)
+                } else {
+                    break
+                }
+            } catch (e: Exception) {
+                lastError = e.message ?: "Network error"
+                Thread.sleep(1000L * attempt)
             }
         }
+        return Pair(false, "Sorry bro, something went wrong: $lastError")
+    }
 
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            TextField(
-                value = input,
-                onValueChange = { input = it },
-                modifier = Modifier
-                    .weight(1f)
-                    .background(Color(0xFF241536), RoundedCornerShape(24.dp)),
-                placeholder = { Text("Message Bro...", color = Color(0xFF8A7A9B)) },
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Color(0xFF241536),
-                    unfocusedContainerColor = Color(0xFF241536),
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent,
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White
-                ),
-                shape = RoundedCornerShape(24.dp)
-            )
-
-            Spacer(modifier = Modifier.width(8.dp))
-
-            Button(
-                onClick = {
-                    val text = input
-                    input = ""
-                    sendMessage(text)
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7C4DFF))
-            ) {
-                Text("Send")
-            }
-        }
+    override fun onDestroy() {
+        recognizer?.destroy()
+        tts?.stop()
+        tts?.shutdown()
+        super.onDestroy()
     }
 }
 
 @Composable
-fun ChatBubble(message: ChatMessage) {
-    val bubbleColor = if (message.fromUser) Color(0xFF7C4DFF) else Color(0xFF241536)
-    val alignment = if (message.fromUser) Alignment.CenterEnd else Alignment.CenterStart
+fun BroOrb(state: BroState, onClick: () -> Unit) {
+    val transition = rememberInfiniteTransition(label = "orb")
+    val duration = when (state) {
+        BroState.IDLE -> 2400
+        BroState.LISTENING -> 600
+        BroState.THINKING -> 1200
+        BroState.SPEAKING -> 900
+    }
+    val pulse by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(duration, easing = LinearEasing), RepeatMode.Reverse),
+        label = "pulse"
+    )
+    val spin by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(tween(1200, easing = LinearEasing)),
+        label = "spin"
+    )
+    val amp = when (state) {
+        BroState.IDLE -> 0.06f
+        BroState.LISTENING -> 0.18f
+        BroState.THINKING -> 0.04f
+        BroState.SPEAKING -> 0.12f
+    }
+    val scale = 1f + amp * pulse
 
-    Box(
-        modifier = Modifier.fillMaxWidth(),
-        contentAlignment = alignment
+    Canvas(
+        modifier = Modifier
+            .size(140.dp)
+            .clickable { onClick() }
     ) {
-        Box(
-            modifier = Modifier
-                .background(bubbleColor, RoundedCornerShape(16.dp))
-                .padding(horizontal = 14.dp, vertical = 10.dp)
-                .widthIn(max = 280.dp)
-        ) {
-            Text(text = message.text, color = Color.White, fontSize = 15.sp)
+        val r = size.minDimension / 2f * 0.6f * scale
+        val glowAlpha = if (state == BroState.SPEAKING) 0.2f + 0.3f * pulse else 0.25f
+        drawCircle(Accent.copy(alpha = glowAlpha), radius = r * 1.4f, center = center)
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(AccentLight, Accent),
+                center = center,
+                radius = r
+            ),
+            radius = r,
+            center = center
+        )
+        if (state == BroState.THINKING) {
+            val ring = r * 1.25f
+            drawArc(
+                color = AccentLight,
+                startAngle = spin,
+                sweepAngle = 90f,
+                useCenter = false,
+                topLeft = Offset(center.x - ring, center.y - ring),
+                size = Size(ring * 2, ring * 2),
+                style = Stroke(width = 8f)
+            )
         }
     }
 }
