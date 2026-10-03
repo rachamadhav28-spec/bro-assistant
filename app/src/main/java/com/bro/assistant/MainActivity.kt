@@ -12,6 +12,7 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -78,9 +79,13 @@ class MainActivity : ComponentActivity() {
     private val messages = mutableStateListOf<ChatMessage>()
     private val apiKey = mutableStateOf("")
     private val teluguMode = mutableStateOf(false)
+    private val wakeMode = mutableStateOf(false)
     private var tts: TextToSpeech? = null
     private var recognizer: SpeechRecognizer? = null
     private var ttsReady = false
+    private var skipWake = false
+    private var inForeground = true
+    private val wakeRegex = Regex("(hey|hi|ok|okay|hay)\\s+bro\\b")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -88,6 +93,8 @@ class MainActivity : ComponentActivity() {
         val prefs = getSharedPreferences("bro_prefs", Context.MODE_PRIVATE)
         apiKey.value = prefs.getString("api_key", "") ?: ""
         teluguMode.value = prefs.getBoolean("telugu", false)
+        wakeMode.value = prefs.getBoolean("wake", false)
+        if (wakeMode.value) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         tts = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
@@ -97,11 +104,18 @@ class MainActivity : ComponentActivity() {
                 tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {}
                     override fun onDone(utteranceId: String?) {
-                        handler.post { if (hasMicPermission()) startListening() else broState.value = BroState.IDLE }
+                        handler.post {
+                            skipWake = true
+                            if (inForeground && hasMicPermission()) startListening()
+                            else broState.value = BroState.IDLE
+                        }
                     }
                     @Deprecated("Deprecated in Java")
                     override fun onError(utteranceId: String?) {
-                        handler.post { broState.value = BroState.IDLE }
+                        handler.post {
+                            broState.value = BroState.IDLE
+                            scheduleWakeRestart(500)
+                        }
                     }
                 })
                 ttsReady = true
@@ -121,6 +135,23 @@ class MainActivity : ComponentActivity() {
                 BroScreen(prefs)
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        inForeground = true
+        if (wakeMode.value && apiKey.value.isNotEmpty() && hasMicPermission() &&
+            broState.value == BroState.IDLE
+        ) {
+            startListening()
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        inForeground = false
+        recognizer?.cancel()
+        if (broState.value == BroState.LISTENING) broState.value = BroState.IDLE
     }
 
     @Composable
@@ -202,7 +233,9 @@ class MainActivity : ComponentActivity() {
                         when (broState.value) {
                             BroState.SPEAKING -> {
                                 tts?.stop()
+                                skipWake = false
                                 broState.value = BroState.IDLE
+                                scheduleWakeRestart(300)
                             }
                             BroState.IDLE -> {
                                 if (hasMicPermission()) startListening()
@@ -215,8 +248,10 @@ class MainActivity : ComponentActivity() {
 
                 Text(
                     when (broState.value) {
-                        BroState.IDLE -> "Tap the orb and talk"
-                        BroState.LISTENING -> "Listening..."
+                        BroState.IDLE ->
+                            if (wakeMode.value) "Hey Bro mode is on" else "Tap the orb and talk"
+                        BroState.LISTENING ->
+                            if (wakeMode.value) "Listening... say \"Hey Bro\"" else "Listening..."
                         BroState.THINKING -> "Thinking..."
                         BroState.SPEAKING -> "Speaking... tap to stop"
                     },
@@ -224,6 +259,22 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center
                 )
+
+                Button(
+                    onClick = {
+                        val turnOn = !wakeMode.value
+                        setWakeMode(turnOn, prefs)
+                        if (turnOn && !hasMicPermission()) {
+                            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+                ) {
+                    Text(
+                        if (wakeMode.value) "Hey Bro mode: ON (tap to turn off)"
+                        else "Hey Bro mode: OFF (tap to turn on)"
+                    )
+                }
 
                 Button(
                     onClick = {
@@ -265,7 +316,33 @@ class MainActivity : ComponentActivity() {
             PackageManager.PERMISSION_GRANTED
     }
 
+    private fun setWakeMode(on: Boolean, prefs: android.content.SharedPreferences) {
+        wakeMode.value = on
+        prefs.edit().putBoolean("wake", on).apply()
+        if (on) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            if (hasMicPermission() && broState.value == BroState.IDLE) startListening()
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            skipWake = false
+            recognizer?.cancel()
+            if (broState.value == BroState.LISTENING) broState.value = BroState.IDLE
+        }
+    }
+
+    private fun scheduleWakeRestart(delayMs: Long) {
+        if (!wakeMode.value) return
+        handler.postDelayed({
+            if (wakeMode.value && inForeground && broState.value == BroState.IDLE &&
+                apiKey.value.isNotEmpty() && hasMicPermission()
+            ) {
+                startListening()
+            }
+        }, delayMs)
+    }
+
     private fun startListening() {
+        if (broState.value == BroState.LISTENING) return
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
             messages.add(ChatMessage("Speech recognition isn't available on this phone.", false))
             return
@@ -279,17 +356,23 @@ class MainActivity : ComponentActivity() {
                 override fun onBufferReceived(buffer: ByteArray?) {}
                 override fun onEndOfSpeech() {}
                 override fun onError(error: Int) {
+                    skipWake = false
                     broState.value = BroState.IDLE
+                    if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
+                        wakeMode.value = false
+                        getSharedPreferences("bro_prefs", Context.MODE_PRIVATE)
+                            .edit().putBoolean("wake", false).apply()
+                        return
+                    }
+                    val quick = error == SpeechRecognizer.ERROR_NO_MATCH ||
+                        error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
+                    scheduleWakeRestart(if (quick) 300L else 1500L)
                 }
                 override fun onResults(results: Bundle?) {
                     val text = results
                         ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                         ?.firstOrNull()
-                    if (text.isNullOrBlank()) {
-                        broState.value = BroState.IDLE
-                    } else {
-                        sendToBro(text)
-                    }
+                    handleHeard(text)
                 }
                 override fun onPartialResults(partialResults: Bundle?) {}
                 override fun onEvent(eventType: Int, params: Bundle?) {}
@@ -304,14 +387,61 @@ class MainActivity : ComponentActivity() {
         recognizer?.startListening(intent)
     }
 
+    private fun handleHeard(text: String?) {
+        if (text.isNullOrBlank()) {
+            skipWake = false
+            broState.value = BroState.IDLE
+            scheduleWakeRestart(300)
+            return
+        }
+        if (!wakeMode.value) {
+            skipWake = false
+            sendToBro(text)
+            return
+        }
+        val lower = text.lowercase().trim()
+        val match = wakeRegex.find(lower)
+        val rest: String
+        if (match != null) {
+            rest = lower.substring(match.range.last + 1).trim().trimStart(',', '.', '!', ' ')
+        } else if (skipWake) {
+            rest = text.trim()
+        } else {
+            broState.value = BroState.IDLE
+            scheduleWakeRestart(300)
+            return
+        }
+        skipWake = false
+        if (rest.isEmpty()) greetUser() else sendToBro(rest)
+    }
+
+    private fun greetUser() {
+        messages.add(ChatMessage("Yes bro?", false))
+        skipWake = true
+        if (ttsReady) {
+            speak("Yes bro?")
+        } else {
+            broState.value = BroState.IDLE
+            scheduleWakeRestart(300)
+        }
+    }
+
+    private fun speak(reply: String) {
+        broState.value = BroState.SPEAKING
+        tts?.language = if (teluguMode.value) Locale("te", "IN") else Locale.getDefault()
+        tts?.setSpeechRate(1.0f)
+        tts?.speak(reply, TextToSpeech.QUEUE_FLUSH, null, "bro_reply")
+    }
+
     private fun sendToBro(text: String) {
         messages.add(ChatMessage(text, true))
         val appReply = tryOpenApp(this, text)
-if (appReply != null) {
-    messages.add(ChatMessage(appReply, false))
-    broState.value = BroState.IDLE
-    return
-}
+        if (appReply != null) {
+            messages.add(ChatMessage(appReply, false))
+            broState.value = BroState.IDLE
+            scheduleWakeRestart(1500)
+            return
+        }
         broState.value = BroState.THINKING
         val prompt = if (teluguMode.value) "Reply only in Telugu. " + text else text
         Thread {
@@ -319,12 +449,10 @@ if (appReply != null) {
             handler.post {
                 messages.add(ChatMessage(reply, false))
                 if (ok && ttsReady) {
-                    broState.value = BroState.SPEAKING
-                    tts?.language = if (teluguMode.value) Locale("te", "IN") else Locale.getDefault()
-                    tts?.setSpeechRate(1.0f)
-                    tts?.speak(reply, TextToSpeech.QUEUE_FLUSH, null, "bro_reply")
+                    speak(reply)
                 } else {
                     broState.value = BroState.IDLE
+                    scheduleWakeRestart(500)
                 }
             }
         }.start()
@@ -380,6 +508,7 @@ if (appReply != null) {
     }
 
     override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
         recognizer?.destroy()
         tts?.stop()
         tts?.shutdown()
