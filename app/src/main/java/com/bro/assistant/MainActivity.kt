@@ -306,6 +306,12 @@ class MainActivity : ComponentActivity() {
 
     private fun sendToBro(text: String) {
         messages.add(ChatMessage(text, true))
+        val appReply = tryOpenApp(this, text)
+if (appReply != null) {
+    messages.add(ChatMessage(appReply, false))
+    broState.value = BroState.IDLE
+    return
+}
         broState.value = BroState.THINKING
         val prompt = if (teluguMode.value) "Reply only in Telugu. " + text else text
         Thread {
