@@ -91,7 +91,7 @@ class MainActivity : ComponentActivity() {
             if (status == TextToSpeech.SUCCESS) {
                 tts?.language = Locale.getDefault()
                 tts?.setSpeechRate(1.0f)
-                tts?.setPitch(1.0f)
+                tts?.setPitch(0.75f)
                 tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {}
                     override fun onDone(utteranceId: String?) {
