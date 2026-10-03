@@ -3,14 +3,21 @@ package com.bro.assistant
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -20,9 +27,13 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
@@ -35,6 +46,8 @@ import java.net.URL
 import java.util.Locale
 
 data class ChatMessage(val text: String, val fromUser: Boolean)
+
+enum class BroState { IDLE, LISTENING, THINKING, SPEAKING }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -170,6 +183,79 @@ suspend fun askGemini(apiKey: String, userMessage: String): String {
 }
 
 @Composable
+fun BroOrb(state: BroState, modifier: Modifier = Modifier) {
+    val infiniteTransition = rememberInfiniteTransition(label = "orb")
+
+    val pulseDuration = when (state) {
+        BroState.IDLE -> 2200
+        BroState.LISTENING -> 700
+        BroState.THINKING -> 500
+        BroState.SPEAKING -> 350
+    }
+
+    val scale by infiniteTransition.animateFloat(
+        initialValue = 0.85f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(pulseDuration, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "scale"
+    )
+
+    val rotationAngle by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(if (state == BroState.THINKING) 1200 else 6000, easing = LinearEasing)
+        ),
+        label = "rotation"
+    )
+
+    val coreColor by animateColorAsState(
+        targetValue = when (state) {
+            BroState.IDLE -> Color(0xFF7C4DFF)
+            BroState.LISTENING -> Color(0xFFB388FF)
+            BroState.THINKING -> Color(0xFF9C6DFF)
+            BroState.SPEAKING -> Color(0xFFD1B3FF)
+        },
+        label = "color"
+    )
+
+    Box(
+        modifier = modifier.size(140.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val center = Offset(size.width / 2, size.height / 2)
+            val maxRadius = size.minDimension / 2
+
+            rotate(degrees = rotationAngle, pivot = center) {
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(coreColor.copy(alpha = 0.35f), Color.Transparent),
+                        center = center,
+                        radius = maxRadius
+                    ),
+                    radius = maxRadius * scale,
+                    center = center
+                )
+            }
+
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(coreColor, coreColor.copy(alpha = 0.6f)),
+                    center = center,
+                    radius = maxRadius * 0.55f
+                ),
+                radius = (maxRadius * 0.5f) * scale,
+                center = center
+            )
+        }
+    }
+}
+
+@Composable
 fun BroScreen(apiKey: String) {
     val context = LocalContext.current
     val messages = remember {
@@ -178,18 +264,17 @@ fun BroScreen(apiKey: String) {
         )
     }
     var input by remember { mutableStateOf("") }
-    var isThinking by remember { mutableStateOf(false) }
+    var broState by remember { mutableStateOf(BroState.IDLE) }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
-    // Text-to-speech setup
     val tts = remember { mutableStateOf<TextToSpeech?>(null) }
     DisposableEffect(Unit) {
         val engine = TextToSpeech(context) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 tts.value?.language = Locale.US
-                // Try to pick a lower-pitched (male-leaning) voice
-                tts.value?.setPitch(0.85f)
+                tts.value?.setSpeechRate(1.0f)
+                tts.value?.setPitch(0.9f)
             }
         }
         tts.value = engine
@@ -199,63 +284,94 @@ fun BroScreen(apiKey: String) {
         }
     }
 
+    LaunchedEffect(tts.value) {
+        tts.value?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {
+                broState = BroState.SPEAKING
+            }
+            override fun onDone(utteranceId: String?) {
+                broState = BroState.IDLE
+            }
+            override fun onError(utteranceId: String?) {
+                broState = BroState.IDLE
+            }
+        })
+    }
+
     fun speak(text: String) {
-        tts.value?.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
+        tts.value?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "bro_reply")
     }
 
     fun sendMessage(userText: String) {
-        if (userText.isBlank() || isThinking) return
+        if (userText.isBlank()) return
         messages.add(ChatMessage(userText, fromUser = true))
-        isThinking = true
+        broState = BroState.THINKING
         scope.launch {
             listState.animateScrollToItem(messages.size)
             val reply = askGemini(apiKey, userText)
-            isThinking = false
             messages.add(ChatMessage(reply, fromUser = false))
             listState.animateScrollToItem(messages.size - 1)
             speak(reply)
         }
     }
 
-    // Voice recognition launcher
-    val speechLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == android.app.Activity.RESULT_OK) {
-            val spokenText = result.data
-                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
-                ?.firstOrNull()
-            if (!spokenText.isNullOrBlank()) {
-                sendMessage(spokenText)
-            }
-        }
+    val speechRecognizer = remember {
+        if (SpeechRecognizer.isRecognitionAvailable(context)) {
+            SpeechRecognizer.createSpeechRecognizer(context)
+        } else null
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { speechRecognizer?.destroy() }
     }
 
     fun startListening() {
+        if (speechRecognizer == null) {
+            Toast.makeText(context, "Voice input not available on this device", Toast.LENGTH_SHORT).show()
+            return
+        }
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.US)
-            putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak to Bro...")
         }
-        try {
-            speechLauncher.launch(intent)
-        } catch (e: Exception) {
-            Toast.makeText(context, "Voice input not available on this device", Toast.LENGTH_SHORT).show()
-        }
+        speechRecognizer.setRecognitionListener(object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) { broState = BroState.LISTENING }
+            override fun onBeginningOfSpeech() { broState = BroState.LISTENING }
+            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onBufferReceived(buffer: ByteArray?) {}
+            override fun onEndOfSpeech() { broState = BroState.THINKING }
+            override fun onError(error: Int) {
+                broState = BroState.IDLE
+            }
+            override fun onResults(results: Bundle?) {
+                val spokenText = results
+                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull()
+                if (!spokenText.isNullOrBlank()) {
+                    sendMessage(spokenText)
+                } else {
+                    broState = BroState.IDLE
+                }
+            }
+            override fun onPartialResults(partialResults: Bundle?) {}
+            override fun onEvent(eventType: Int, params: Bundle?) {}
+        })
+        speechRecognizer.startListening(intent)
     }
 
-    // Microphone permission launcher
     val micPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (granted) {
-            startListening()
-        } else {
-            Toast.makeText(context, "Microphone permission is needed for voice input", Toast.LENGTH_SHORT).show()
-        }
+        if (granted) startListening()
+        else Toast.makeText(context, "Microphone permission is needed for voice input", Toast.LENGTH_SHORT).show()
     }
 
     fun onMicTapped() {
+        if (broState == BroState.LISTENING) {
+            speechRecognizer?.stopListening()
+            broState = BroState.IDLE
+            return
+        }
         micPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
     }
 
@@ -272,6 +388,33 @@ fun BroScreen(apiKey: String) {
             modifier = Modifier.padding(16.dp)
         )
 
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            BroOrb(
+                state = broState,
+                modifier = Modifier.clickable { onMicTapped() }
+            )
+        }
+
+        Text(
+            text = when (broState) {
+                BroState.IDLE -> "Tap the orb to speak"
+                BroState.LISTENING -> "Listening..."
+                BroState.THINKING -> "Thinking..."
+                BroState.SPEAKING -> "Speaking..."
+            },
+            color = Color(0xFF8A7A9B),
+            fontSize = 13.sp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 8.dp),
+            textAlign = TextAlign.Center
+        )
+
         LazyColumn(
             state = listState,
             modifier = Modifier
@@ -283,7 +426,7 @@ fun BroScreen(apiKey: String) {
             items(messages) { msg ->
                 ChatBubble(msg)
             }
-            if (isThinking) {
+            if (broState == BroState.THINKING) {
                 item {
                     ChatBubble(ChatMessage("Bro is thinking...", fromUser = false))
                 }
@@ -313,16 +456,6 @@ fun BroScreen(apiKey: String) {
                 ),
                 shape = RoundedCornerShape(24.dp)
             )
-
-            Spacer(modifier = Modifier.width(8.dp))
-
-            IconButton(
-                onClick = { onMicTapped() },
-                modifier = Modifier
-                    .background(Color(0xFF241536), RoundedCornerShape(50))
-            ) {
-                Text("\uD83C\uDFA4", fontSize = 20.sp)
-            }
 
             Spacer(modifier = Modifier.width(8.dp))
 
