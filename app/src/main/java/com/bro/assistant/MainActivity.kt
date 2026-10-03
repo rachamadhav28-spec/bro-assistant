@@ -97,7 +97,7 @@ class MainActivity : ComponentActivity() {
                 tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {}
                     override fun onDone(utteranceId: String?) {
-                        handler.post { broState.value = BroState.IDLE }
+                        handler.post { if (hasMicPermission()) startListening() else broState.value = BroState.IDLE }
                     }
                     @Deprecated("Deprecated in Java")
                     override fun onError(utteranceId: String?) {
