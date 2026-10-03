@@ -1,9 +1,15 @@
 package com.bro.assistant
 
 import android.content.Context
+import android.content.Intent
 import android.os.Bundle
+import android.speech.RecognizerIntent
+import android.speech.tts.TextToSpeech
+import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -12,10 +18,10 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -26,6 +32,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.Locale
 
 data class ChatMessage(val text: String, val fromUser: Boolean)
 
@@ -164,6 +171,7 @@ suspend fun askGemini(apiKey: String, userMessage: String): String {
 
 @Composable
 fun BroScreen(apiKey: String) {
+    val context = LocalContext.current
     val messages = remember {
         mutableStateListOf(
             ChatMessage("Bro is online. Ask me anything.", fromUser = false)
@@ -173,6 +181,83 @@ fun BroScreen(apiKey: String) {
     var isThinking by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+
+    // Text-to-speech setup
+    val tts = remember { mutableStateOf<TextToSpeech?>(null) }
+    DisposableEffect(Unit) {
+        val engine = TextToSpeech(context) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                tts.value?.language = Locale.US
+                // Try to pick a lower-pitched (male-leaning) voice
+                tts.value?.setPitch(0.85f)
+            }
+        }
+        tts.value = engine
+        onDispose {
+            engine.stop()
+            engine.shutdown()
+        }
+    }
+
+    fun speak(text: String) {
+        tts.value?.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
+    }
+
+    fun sendMessage(userText: String) {
+        if (userText.isBlank() || isThinking) return
+        messages.add(ChatMessage(userText, fromUser = true))
+        isThinking = true
+        scope.launch {
+            listState.animateScrollToItem(messages.size)
+            val reply = askGemini(apiKey, userText)
+            isThinking = false
+            messages.add(ChatMessage(reply, fromUser = false))
+            listState.animateScrollToItem(messages.size - 1)
+            speak(reply)
+        }
+    }
+
+    // Voice recognition launcher
+    val speechLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            val spokenText = result.data
+                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                ?.firstOrNull()
+            if (!spokenText.isNullOrBlank()) {
+                sendMessage(spokenText)
+            }
+        }
+    }
+
+    fun startListening() {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.US)
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak to Bro...")
+        }
+        try {
+            speechLauncher.launch(intent)
+        } catch (e: Exception) {
+            Toast.makeText(context, "Voice input not available on this device", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Microphone permission launcher
+    val micPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            startListening()
+        } else {
+            Toast.makeText(context, "Microphone permission is needed for voice input", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun onMicTapped() {
+        micPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+    }
 
     Column(
         modifier = Modifier
@@ -231,21 +316,21 @@ fun BroScreen(apiKey: String) {
 
             Spacer(modifier = Modifier.width(8.dp))
 
+            IconButton(
+                onClick = { onMicTapped() },
+                modifier = Modifier
+                    .background(Color(0xFF241536), RoundedCornerShape(50))
+            ) {
+                Text("\uD83C\uDFA4", fontSize = 20.sp)
+            }
+
+            Spacer(modifier = Modifier.width(8.dp))
+
             Button(
                 onClick = {
-                    if (input.isNotBlank() && !isThinking) {
-                        val userText = input
-                        messages.add(ChatMessage(userText, fromUser = true))
-                        input = ""
-                        isThinking = true
-                        scope.launch {
-                            listState.animateScrollToItem(messages.size)
-                            val reply = askGemini(apiKey, userText)
-                            isThinking = false
-                            messages.add(ChatMessage(reply, fromUser = false))
-                            listState.animateScrollToItem(messages.size - 1)
-                        }
-                    }
+                    val text = input
+                    input = ""
+                    sendMessage(text)
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7C4DFF))
             ) {
