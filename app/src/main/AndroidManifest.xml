@@ -3,6 +3,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <queries>
         <intent>
@@ -21,6 +22,10 @@
         android:allowBackup="true"
         android:label="@string/app_name"
         android:theme="@style/Theme.Bro">
+                <service
+            android:name=".BroService"
+            android:foregroundServiceType="microphone"
+            android:exported="false" />
         <activity
             android:name=".MainActivity"
             android:exported="true">
