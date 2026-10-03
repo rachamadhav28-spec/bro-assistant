@@ -115,38 +115,50 @@ fun ApiKeyScreen(onSaved: (String) -> Unit) {
 
 suspend fun askGemini(apiKey: String, userMessage: String): String {
     return withContext(Dispatchers.IO) {
-        try { 
-           val url = URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=$apiKey") 
-            val connection = url.openConnection() as HttpURLConnection
-            connection.requestMethod = "POST"
-            connection.setRequestProperty("Content-Type", "application/json")
-            connection.doOutput = true
+        var attempts = 0
+        var lastError = "Unknown error"
 
-            val requestBody = JSONObject().apply {
-                put("contents", JSONArray().put(
-                    JSONObject().put("parts", JSONArray().put(
-                        JSONObject().put("text", userMessage)
+        while (attempts < 3) {
+            attempts++
+            try {
+                val url = URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent?key=$apiKey")
+                val connection = url.openConnection() as HttpURLConnection
+                connection.requestMethod = "POST"
+                connection.setRequestProperty("Content-Type", "application/json")
+                connection.doOutput = true
+
+                val requestBody = JSONObject().apply {
+                    put("contents", JSONArray().put(
+                        JSONObject().put("parts", JSONArray().put(
+                            JSONObject().put("text", userMessage)
+                        ))
                     ))
-                ))
+                }
+
+                connection.outputStream.use { it.write(requestBody.toString().toByteArray()) }
+
+                val responseCode = connection.responseCode
+                if (responseCode == 503 || responseCode == 429) {
+                    lastError = "Server busy (code $responseCode)"
+                    kotlinx.coroutines.delay(1500L * attempts)
+                    continue
+                }
+                if (responseCode != 200) {
+                    val errorText = connection.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
+                    return@withContext "Error ($responseCode): $errorText"
+                }
+
+                val responseText = connection.inputStream.bufferedReader().readText()
+                val json = JSONObject(responseText)
+                val candidates = json.getJSONArray("candidates")
+                val content = candidates.getJSONObject(0).getJSONObject("content")
+                val parts = content.getJSONArray("parts")
+                return@withContext parts.getJSONObject(0).getString("text")
+            } catch (e: Exception) {
+                lastError = "Something went wrong: ${e.message}"
             }
-
-            connection.outputStream.use { it.write(requestBody.toString().toByteArray()) }
-
-            val responseCode = connection.responseCode
-            if (responseCode != 200) {
-                val errorText = connection.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
-                return@withContext "Error ($responseCode): $errorText"
-            }
-
-            val responseText = connection.inputStream.bufferedReader().readText()
-            val json = JSONObject(responseText)
-            val candidates = json.getJSONArray("candidates")
-            val content = candidates.getJSONObject(0).getJSONObject("content")
-            val parts = content.getJSONArray("parts")
-            parts.getJSONObject(0).getString("text")
-        } catch (e: Exception) {
-            "Something went wrong: ${e.message}"
         }
+        "Bro couldn't reach the server after a few tries. ($lastError)"
     }
 }
 
