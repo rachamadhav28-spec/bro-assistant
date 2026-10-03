@@ -435,7 +435,7 @@ class MainActivity : ComponentActivity() {
 
     private fun sendToBro(text: String) {
         messages.add(ChatMessage(text, true))
-        val appReply = tryOpenApp(this, text)
+        val appReply = tryOpenApp(this, text) ?: tryDeviceCommand(this, text)
         if (appReply != null) {
             messages.add(ChatMessage(appReply, false))
             broState.value = BroState.IDLE
