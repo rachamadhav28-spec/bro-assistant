@@ -225,7 +225,8 @@ class MainActivity : ComponentActivity() {
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center
                 )
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Button(onClick = { teluguMode.value = !teluguMode.value; prefs.edit().putBoolean("telugu", teluguMode.value).apply() }) { Text(if (teluguMode.value) "Language: Telugu (tap for English)" else "Language: English (tap for Telugu)") }
+                
                     OutlinedTextField(
                         value = textInput,
                         onValueChange = { textInput = it },
