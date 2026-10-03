@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
@@ -13,11 +14,13 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import androidx.core.app.NotificationCompat
+import com.google.ai.client.generativeai.GenerativeModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Locale
 
 class BroService : Service() {
@@ -159,5 +162,27 @@ class BroService : Service() {
         tts?.shutdown()
         serviceScope.coroutineContext[Job]?.cancel()
         super.onDestroy()
+    }
+
+    // --- NEW FUNCTIONS TO FIX UNRESOLVED REFERENCES ---
+
+    private fun getSavedApiKey(context: Context): String? {
+        val sharedPreferences = context.getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
+        return sharedPreferences.getString("GEMINI_API_KEY", null)
+    }
+
+    private suspend fun askGemini(apiKey: String, prompt: String): String {
+        return withContext(Dispatchers.IO) {
+            try {
+                val generativeModel = GenerativeModel(
+                    modelName = "gemini-1.5-flash",
+                    apiKey = apiKey
+                )
+                val response = generativeModel.generateContent(prompt)
+                response.text ?: "I couldn't process that request."
+            } catch (e: Exception) {
+                "Error: ${e.localizedMessage}"
+            }
+        }
     }
 }
