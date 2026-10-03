@@ -205,7 +205,7 @@ class MainActivity : ComponentActivity() {
                                 broState.value = BroState.IDLE
                             }
                             BroState.IDLE -> {
-                                if (ContextCompatCheck()) startListening()
+                                if (hasMicPermission()) startListening()
                                 else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                             }
                             else -> {}
@@ -225,8 +225,20 @@ class MainActivity : ComponentActivity() {
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center
                 )
 
-                Button(onClick = { teluguMode.value = !teluguMode.value; prefs.edit().putBoolean("telugu", teluguMode.value).apply() }) { Text(if (teluguMode.value) "Language: Telugu (tap for English)" else "Language: English (tap for Telugu)") }
-                
+                Button(
+                    onClick = {
+                        teluguMode.value = !teluguMode.value
+                        prefs.edit().putBoolean("telugu", teluguMode.value).apply()
+                    },
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+                ) {
+                    Text(
+                        if (teluguMode.value) "Language: Telugu (tap for English)"
+                        else "Language: English (tap for Telugu)"
+                    )
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     OutlinedTextField(
                         value = textInput,
                         onValueChange = { textInput = it },
@@ -248,8 +260,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun ContextCompatCheck(): Boolean =
-        checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+    private fun hasMicPermission(): Boolean {
+        return checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+    }
 
     private fun startListening() {
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
@@ -281,9 +295,10 @@ class MainActivity : ComponentActivity() {
                 override fun onEvent(eventType: Int, params: Bundle?) {}
             })
         }
+        val listenLocale = if (teluguMode.value) Locale("te", "IN") else Locale.getDefault()
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, if (teluguMode.value) Locale("te", "IN") else Locale.getDefault())
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, listenLocale.toLanguageTag())
         }
         broState.value = BroState.LISTENING
         recognizer?.startListening(intent)
@@ -292,12 +307,13 @@ class MainActivity : ComponentActivity() {
     private fun sendToBro(text: String) {
         messages.add(ChatMessage(text, true))
         broState.value = BroState.THINKING
+        val prompt = if (teluguMode.value) "Reply only in Telugu. " + text else text
         Thread {
-            val (ok, reply) = callGemini(if (teluguMode.value) "Reply only in Telugu. " + text else text)
+            val (ok, reply) = callGemini(prompt)
             handler.post {
                 messages.add(ChatMessage(reply, false))
                 if (ok && ttsReady) {
-                    messages.add(ChatMessage(reply, false))
+                    broState.value = BroState.SPEAKING
                     tts?.language = if (teluguMode.value) Locale("te", "IN") else Locale.getDefault()
                     tts?.setSpeechRate(1.0f)
                     tts?.speak(reply, TextToSpeech.QUEUE_FLUSH, null, "bro_reply")
