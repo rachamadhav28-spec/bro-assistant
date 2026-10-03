@@ -83,9 +83,20 @@ class MainActivity : ComponentActivity() {
     private var tts: TextToSpeech? = null
     private var recognizer: SpeechRecognizer? = null
     private var ttsReady = false
-    private var skipWake = false
     private var inForeground = true
     private val wakeRegex = Regex("(hey|hi|ok|okay|hay)\\s+bro\\b")
+
+    // After "Hey Bro", Bro stays awake for this long after his last reply
+    private val awakeWindowMs = 45000L
+    private var awakeUntil = 0L
+
+    private fun isAwake(): Boolean = System.currentTimeMillis() < awakeUntil
+    private fun stayAwake() {
+        awakeUntil = System.currentTimeMillis() + awakeWindowMs
+    }
+    private fun goToSleep() {
+        awakeUntil = 0L
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -105,7 +116,7 @@ class MainActivity : ComponentActivity() {
                     override fun onStart(utteranceId: String?) {}
                     override fun onDone(utteranceId: String?) {
                         handler.post {
-                            skipWake = true
+                            stayAwake()
                             if (inForeground && hasMicPermission()) startListening()
                             else broState.value = BroState.IDLE
                         }
@@ -233,7 +244,6 @@ class MainActivity : ComponentActivity() {
                         when (broState.value) {
                             BroState.SPEAKING -> {
                                 tts?.stop()
-                                skipWake = false
                                 broState.value = BroState.IDLE
                                 scheduleWakeRestart(300)
                             }
@@ -251,7 +261,9 @@ class MainActivity : ComponentActivity() {
                         BroState.IDLE ->
                             if (wakeMode.value) "Hey Bro mode is on" else "Tap the orb and talk"
                         BroState.LISTENING ->
-                            if (wakeMode.value) "Listening... say \"Hey Bro\"" else "Listening..."
+                            if (wakeMode.value) {
+                                if (isAwake()) "Listening... just talk" else "Listening... say \"Hey Bro\""
+                            } else "Listening..."
                         BroState.THINKING -> "Thinking..."
                         BroState.SPEAKING -> "Speaking... tap to stop"
                     },
@@ -324,7 +336,7 @@ class MainActivity : ComponentActivity() {
             if (hasMicPermission() && broState.value == BroState.IDLE) startListening()
         } else {
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            skipWake = false
+            goToSleep()
             recognizer?.cancel()
             if (broState.value == BroState.LISTENING) broState.value = BroState.IDLE
         }
@@ -356,7 +368,6 @@ class MainActivity : ComponentActivity() {
                 override fun onBufferReceived(buffer: ByteArray?) {}
                 override fun onEndOfSpeech() {}
                 override fun onError(error: Int) {
-                    skipWake = false
                     broState.value = BroState.IDLE
                     if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
                         wakeMode.value = false
@@ -389,13 +400,11 @@ class MainActivity : ComponentActivity() {
 
     private fun handleHeard(text: String?) {
         if (text.isNullOrBlank()) {
-            skipWake = false
             broState.value = BroState.IDLE
             scheduleWakeRestart(300)
             return
         }
         if (!wakeMode.value) {
-            skipWake = false
             sendToBro(text)
             return
         }
@@ -404,20 +413,19 @@ class MainActivity : ComponentActivity() {
         val rest: String
         if (match != null) {
             rest = lower.substring(match.range.last + 1).trim().trimStart(',', '.', '!', ' ')
-        } else if (skipWake) {
+        } else if (isAwake()) {
             rest = text.trim()
         } else {
             broState.value = BroState.IDLE
             scheduleWakeRestart(300)
             return
         }
-        skipWake = false
+        stayAwake()
         if (rest.isEmpty()) greetUser() else sendToBro(rest)
     }
 
     private fun greetUser() {
         messages.add(ChatMessage("Yes bro?", false))
-        skipWake = true
         if (ttsReady) {
             speak("Yes bro?")
         } else {
@@ -439,6 +447,7 @@ class MainActivity : ComponentActivity() {
         if (appReply != null) {
             messages.add(ChatMessage(appReply, false))
             broState.value = BroState.IDLE
+            stayAwake()
             scheduleWakeRestart(1500)
             return
         }
@@ -452,6 +461,7 @@ class MainActivity : ComponentActivity() {
                     speak(reply)
                 } else {
                     broState.value = BroState.IDLE
+                    stayAwake()
                     scheduleWakeRestart(500)
                 }
             }
