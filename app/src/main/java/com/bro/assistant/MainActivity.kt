@@ -293,7 +293,7 @@ class MainActivity : ComponentActivity() {
         messages.add(ChatMessage(text, true))
         broState.value = BroState.THINKING
         Thread {
-            val (ok, reply) = callGemini(text)
+            val (ok, reply) = callGemini(if (teluguMode.value) "Reply only in Telugu. " + text else text)
             handler.post {
                 messages.add(ChatMessage(reply, false))
                 if (ok && ttsReady) {
