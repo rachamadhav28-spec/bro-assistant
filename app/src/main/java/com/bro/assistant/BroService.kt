@@ -6,50 +6,79 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import androidx.core.app.NotificationCompat
-import com.google.ai.client.generativeai.GenerativeModel
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.Locale
 
 class BroService : Service() {
 
-    private var speechRecognizer: SpeechRecognizer? = null
+    private val handler = Handler(Looper.getMainLooper())
+    private var recognizer: SpeechRecognizer? = null
     private var tts: TextToSpeech? = null
-    private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
-    private var listeningForWakeWord = true
+    private var ttsReady = false
+    private val wakeRegex = Regex("(hey|hi|ok|okay|hay)?\\s*bro\\b")
 
     override fun onCreate() {
         super.onCreate()
+        val notification = buildNotification("Listening for \"Hey Bro\"...")
+        if (Build.VERSION.SDK_INT >= 29) {
+            startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+        } else {
+            startForeground(1, notification)
+        }
+
         tts = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 tts?.language = Locale.US
                 tts?.setSpeechRate(1.0f)
                 tts?.setPitch(0.75f)
+                tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) {}
+                    override fun onDone(utteranceId: String?) {
+                        handler.post {
+                            if (utteranceId == "wake") {
+                                listen(true)
+                            } else {
+                                updateNotification("Listening for \"Hey Bro\"...")
+                                listen(false)
+                            }
+                        }
+                    }
+                    @Deprecated("Deprecated in Java")
+                    override fun onError(utteranceId: String?) {
+                        handler.post { listen(false) }
+                    }
+                })
+                ttsReady = true
             }
         }
-        startForeground(1, buildNotification("Listening for \"Hey Bro\"..."))
-        startWakeWordListening()
+        listen(false)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun buildNotification(text: String): Notification {
         val channelId = "bro_service_channel"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(channelId, "Bro Assistant", NotificationManager.IMPORTANCE_LOW)
+            val channel = NotificationChannel(
+                channelId, "Bro Assistant", NotificationManager.IMPORTANCE_LOW
+            )
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
         return NotificationCompat.Builder(this, channelId)
@@ -64,125 +93,152 @@ class BroService : Service() {
         getSystemService(NotificationManager::class.java).notify(1, buildNotification(text))
     }
 
-    private fun startWakeWordListening() {
+    private fun listen(forCommand: Boolean) {
         if (!SpeechRecognizer.isRecognitionAvailable(this)) return
-        speechRecognizer?.destroy()
-        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.US)
-        }
-        speechRecognizer?.setRecognitionListener(object : RecognitionListener {
+        recognizer?.destroy()
+        recognizer = SpeechRecognizer.createSpeechRecognizer(this)
+        recognizer?.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {}
             override fun onBeginningOfSpeech() {}
             override fun onRmsChanged(rmsdB: Float) {}
             override fun onBufferReceived(buffer: ByteArray?) {}
             override fun onEndOfSpeech() {}
             override fun onError(error: Int) {
-                serviceScope.launch {
-                    delay(800)
-                    if (listeningForWakeWord) startWakeWordListening() else startCommandListening()
+                if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
+                    stopSelf()
+                    return
                 }
+                if (forCommand) updateNotification("Listening for \"Hey Bro\"...")
+                val quick = error == SpeechRecognizer.ERROR_NO_MATCH ||
+                    error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
+                handler.postDelayed({ listen(false) }, if (quick) 300L else 1500L)
             }
             override fun onResults(results: Bundle?) {
-                val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    ?.firstOrNull()?.lowercase(Locale.US) ?: ""
-                if (text.contains("bro")) {
-                    listeningForWakeWord = false
-                    updateNotification("Yes? Listening for your command...")
-                    tts?.speak("Yes, I'm listening.", TextToSpeech.QUEUE_FLUSH, null, "wake")
-                    serviceScope.launch {
-                        delay(1200)
-                        startCommandListening()
-                    }
+                val text = results
+                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull() ?: ""
+                if (forCommand) {
+                    handleCommand(text)
                 } else {
-                    startWakeWordListening()
+                    handleWake(text)
                 }
             }
             override fun onPartialResults(partialResults: Bundle?) {}
             override fun onEvent(eventType: Int, params: Bundle?) {}
         })
-        speechRecognizer?.startListening(intent)
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.US.toLanguageTag())
+        }
+        recognizer?.startListening(intent)
     }
 
-    private fun startCommandListening() {
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) return
-        speechRecognizer?.destroy()
-        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.US)
+    private fun handleWake(text: String) {
+        val lower = text.lowercase(Locale.US).trim()
+        val match = wakeRegex.find(lower)
+        if (match == null) {
+            listen(false)
+            return
         }
-        speechRecognizer?.setRecognitionListener(object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) {}
-            override fun onBeginningOfSpeech() {}
-            override fun onRmsChanged(rmsdB: Float) {}
-            override fun onBufferReceived(buffer: ByteArray?) {}
-            override fun onEndOfSpeech() {}
-            override fun onError(error: Int) {
-                listeningForWakeWord = true
-                updateNotification("Listening for \"Hey Bro\"...")
-                serviceScope.launch {
-                    delay(800)
-                    startWakeWordListening()
-                }
+        val rest = lower.substring(match.range.last + 1).trim().trimStart(',', '.', '!', ' ')
+        if (rest.isNotEmpty()) {
+            handleCommand(rest)
+        } else {
+            updateNotification("Yes? Listening for your command...")
+            if (ttsReady) {
+                tts?.speak("Yes bro?", TextToSpeech.QUEUE_FLUSH, null, "wake")
+            } else {
+                listen(true)
             }
-            override fun onResults(results: Bundle?) {
-                val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: ""
-                handleCommand(text)
-            }
-            override fun onPartialResults(partialResults: Bundle?) {}
-            override fun onEvent(eventType: Int, params: Bundle?) {}
-        })
-        speechRecognizer?.startListening(intent)
+        }
     }
 
     private fun handleCommand(text: String) {
-        updateNotification("Thinking...")
-        val apiKey = getSavedApiKey(this)
-        serviceScope.launch {
-            val appResult = tryOpenApp(this@BroService, text)
-            val deviceResult = if (appResult == null) tryDeviceCommand(this@BroService, text) else null
-            val reply = appResult ?: deviceResult ?: if (!apiKey.isNullOrBlank()) {
-                askGemini(apiKey, text)
-            } else {
-                "I need an API key set up in the app first."
-            }
-            tts?.speak(reply, TextToSpeech.QUEUE_FLUSH, null, "reply")
-            listeningForWakeWord = true
-            updateNotification("Listening for \"Hey Bro\"...")
-            delay(1500)
-            startWakeWordListening()
+        if (text.isBlank()) {
+            listen(false)
+            return
         }
+        updateNotification("Thinking...")
+        val appReply = tryOpenApp(this, text) ?: tryDeviceCommand(this, text)
+        if (appReply != null) {
+            speakReply(appReply)
+            return
+        }
+        val key = getSharedPreferences("bro_prefs", Context.MODE_PRIVATE)
+            .getString("api_key", "") ?: ""
+        if (key.isBlank()) {
+            speakReply("I need an API key set up in the app first.")
+            return
+        }
+        Thread {
+            val (_, reply) = callGemini(key, text)
+            handler.post { speakReply(reply) }
+        }.start()
+    }
+
+    private fun speakReply(reply: String) {
+        if (ttsReady) {
+            tts?.speak(reply, TextToSpeech.QUEUE_FLUSH, null, "reply")
+        } else {
+            updateNotification("Listening for \"Hey Bro\"...")
+            listen(false)
+        }
+    }
+
+    private fun callGemini(apiKey: String, prompt: String): Pair<Boolean, String> {
+        val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent"
+        val body = JSONObject().put(
+            "contents",
+            JSONArray().put(
+                JSONObject().put(
+                    "parts",
+                    JSONArray().put(JSONObject().put("text", prompt))
+                )
+            )
+        ).toString()
+
+        var lastError = "Unknown error"
+        for (attempt in 1..3) {
+            try {
+                val conn = URL(url).openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.setRequestProperty("x-goog-api-key", apiKey)
+                conn.doOutput = true
+                conn.connectTimeout = 15000
+                conn.readTimeout = 30000
+                conn.outputStream.use { it.write(body.toByteArray()) }
+                val code = conn.responseCode
+                if (code == 200) {
+                    val raw = conn.inputStream.bufferedReader().readText()
+                    val text = JSONObject(raw)
+                        .getJSONArray("candidates")
+                        .getJSONObject(0)
+                        .getJSONObject("content")
+                        .getJSONArray("parts")
+                        .getJSONObject(0)
+                        .getString("text")
+                    return Pair(true, text.trim())
+                }
+                lastError = "Error code $code"
+                if (code == 503 || code == 429) {
+                    Thread.sleep(1500L * attempt)
+                } else {
+                    break
+                }
+            } catch (e: Exception) {
+                lastError = e.message ?: "Network error"
+                Thread.sleep(1000L * attempt)
+            }
+        }
+        return Pair(false, "Sorry bro, something went wrong: $lastError")
     }
 
     override fun onDestroy() {
-        speechRecognizer?.destroy()
+        handler.removeCallbacksAndMessages(null)
+        recognizer?.destroy()
         tts?.stop()
         tts?.shutdown()
-        serviceScope.coroutineContext[Job]?.cancel()
         super.onDestroy()
-    }
-
-    // --- NEW FUNCTIONS TO FIX UNRESOLVED REFERENCES ---
-
-    private fun getSavedApiKey(context: Context): String? {
-        val sharedPreferences = context.getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
-        return sharedPreferences.getString("GEMINI_API_KEY", null)
-    }
-
-    private suspend fun askGemini(apiKey: String, prompt: String): String {
-        return withContext(Dispatchers.IO) {
-            try {
-                val generativeModel = GenerativeModel(
-                    modelName = "gemini-1.5-flash",
-                    apiKey = apiKey
-                )
-                val response = generativeModel.generateContent(prompt)
-                response.text ?: "I couldn't process that request."
-            } catch (e: Exception) {
-                "Error: ${e.localizedMessage}"
-            }
-        }
     }
 }
