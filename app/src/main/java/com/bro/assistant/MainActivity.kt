@@ -77,6 +77,7 @@ class MainActivity : ComponentActivity() {
     private val broState = mutableStateOf(BroState.IDLE)
     private val messages = mutableStateListOf<ChatMessage>()
     private val apiKey = mutableStateOf("")
+    private val teluguMode = mutableStateOf(false)
     private var tts: TextToSpeech? = null
     private var recognizer: SpeechRecognizer? = null
     private var ttsReady = false
