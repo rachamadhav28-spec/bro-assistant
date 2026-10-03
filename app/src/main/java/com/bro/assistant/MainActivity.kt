@@ -296,7 +296,8 @@ class MainActivity : ComponentActivity() {
             handler.post {
                 messages.add(ChatMessage(reply, false))
                 if (ok && ttsReady) {
-                    broState.value = BroState.SPEAKING
+                    messages.add(ChatMessage(reply, false))
+                    tts?.language = if (teluguMode.value) Locale("te", "IN") else Locale.getDefault()
                     tts?.setSpeechRate(1.0f)
                     tts?.speak(reply, TextToSpeech.QUEUE_FLUSH, null, "bro_reply")
                 } else {
