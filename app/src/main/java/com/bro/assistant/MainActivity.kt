@@ -282,7 +282,7 @@ class MainActivity : ComponentActivity() {
         }
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, if (teluguMode.value) Locale("te", "IN") else Locale.getDefault())
         }
         broState.value = BroState.LISTENING
         recognizer?.startListening(intent)
