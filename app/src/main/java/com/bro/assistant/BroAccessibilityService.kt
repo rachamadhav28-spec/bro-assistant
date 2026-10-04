@@ -1,5 +1,5 @@
 package com.bro.assistant
-
+ 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.content.Context
@@ -10,42 +10,42 @@ import android.os.Handler
 import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
-
+ 
 class BroAccessibilityService : AccessibilityService() {
-
+ 
     companion object {
         var instance: BroAccessibilityService? = null
     }
-
+ 
     private val handler = Handler(Looper.getMainLooper())
-
+ 
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
     }
-
+ 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
-
+ 
     override fun onInterrupt() {}
-
+ 
     override fun onUnbind(intent: Intent?): Boolean {
         instance = null
         return super.onUnbind(intent)
     }
-
+ 
     override fun onDestroy() {
         instance = null
         super.onDestroy()
     }
-
+ 
     fun goBack() {
         performGlobalAction(GLOBAL_ACTION_BACK)
     }
-
+ 
     fun goHome() {
         performGlobalAction(GLOBAL_ACTION_HOME)
     }
-
+ 
     private fun swipe(startFraction: Float, endFraction: Float, durationMs: Long) {
         val dm = resources.displayMetrics
         val x = dm.widthPixels / 2f
@@ -58,15 +58,15 @@ class BroAccessibilityService : AccessibilityService() {
         val gesture = GestureDescription.Builder().addStroke(stroke).build()
         dispatchGesture(gesture, null, null)
     }
-
+ 
     fun scrollDown() {
         swipe(0.70f, 0.30f, 350)
     }
-
+ 
     fun scrollUp() {
         swipe(0.30f, 0.70f, 350)
     }
-
+ 
     fun closeCurrentApp() {
         performGlobalAction(GLOBAL_ACTION_RECENTS)
         handler.postDelayed({
@@ -76,14 +76,14 @@ class BroAccessibilityService : AccessibilityService() {
             }, 600)
         }, 900)
     }
-
+ 
     // ---------- Quick Settings tile toggling ----------
-
+ 
     fun toggleTile(names: List<String>, wantOn: Boolean?, fallback: Intent?) {
         performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS)
         attemptTile(names, wantOn, fallback, 0)
     }
-
+ 
     private fun attemptTile(names: List<String>, wantOn: Boolean?, fallback: Intent?, attempt: Int) {
         val delay = if (attempt == 0) 1200L else 700L
         handler.postDelayed({
@@ -104,7 +104,7 @@ class BroAccessibilityService : AccessibilityService() {
             }
         }, delay)
     }
-
+ 
     private fun closeShade() {
         if (Build.VERSION.SDK_INT >= 31) {
             performGlobalAction(GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE)
@@ -112,7 +112,7 @@ class BroAccessibilityService : AccessibilityService() {
             performGlobalAction(GLOBAL_ACTION_BACK)
         }
     }
-
+ 
     private fun tryClickTile(names: List<String>, wantOn: Boolean?): Boolean {
         val roots = ArrayList<AccessibilityNodeInfo>()
         try {
@@ -124,7 +124,7 @@ class BroAccessibilityService : AccessibilityService() {
         }
         val active = rootInActiveWindow
         if (active != null) roots.add(active)
-
+ 
         for (root in roots) {
             val node = findTileNode(root, names, 0) ?: continue
             val state = readTileState(node)
@@ -138,7 +138,7 @@ class BroAccessibilityService : AccessibilityService() {
         }
         return false
     }
-
+ 
     private fun findTileNode(
         node: AccessibilityNodeInfo,
         names: List<String>,
@@ -147,7 +147,10 @@ class BroAccessibilityService : AccessibilityService() {
         if (depth > 30) return null
         val label = (node.text?.toString() ?: "") + " " + (node.contentDescription?.toString() ?: "")
         val lower = label.lowercase().trim()
-        if (lower.isNotEmpty() && lower.length <= 40 && names.any { lower.contains(it) }) {
+        val matches = names.any { n ->
+            if (n.startsWith("^")) lower.startsWith(n.substring(1)) else lower.contains(n)
+        }
+        if (lower.isNotEmpty() && lower.length <= 40 && matches) {
             return node
         }
         for (i in 0 until node.childCount) {
@@ -157,7 +160,7 @@ class BroAccessibilityService : AccessibilityService() {
         }
         return null
     }
-
+ 
     private fun findClickableParent(start: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         var n: AccessibilityNodeInfo? = start
         var depth = 0
@@ -168,7 +171,7 @@ class BroAccessibilityService : AccessibilityService() {
         }
         return null
     }
-
+ 
     private fun readTileState(start: AccessibilityNodeInfo): Boolean? {
         var n: AccessibilityNodeInfo? = start
         var depth = 0
@@ -192,21 +195,21 @@ class BroAccessibilityService : AccessibilityService() {
         return null
     }
 }
-
+ 
 fun tryAccessibilityCommand(context: Context, spoken: String): String? {
     val text = spoken.lowercase().trim().removeSuffix(".")
-
+ 
     val isScrollDown = text.contains("scroll") && text.contains("down")
     val isScrollUp = text.contains("scroll") && text.contains("up")
     val isBack = text == "go back" || text == "back"
     val isHome = text == "go home" || text == "home" || text.contains("home screen")
     val isClose = text.startsWith("close")
-
+ 
     if (!isScrollDown && !isScrollUp && !isBack && !isHome && !isClose) return null
-
+ 
     val service = BroAccessibilityService.instance
         ?: return "Please turn on Bro in Accessibility settings first."
-
+ 
     return when {
         isScrollDown -> { service.scrollDown(); "Scrolling down" }
         isScrollUp -> { service.scrollUp(); "Scrolling up" }
@@ -215,3 +218,4 @@ fun tryAccessibilityCommand(context: Context, spoken: String): String? {
         else -> { service.closeCurrentApp(); "Closing the app" }
     }
 }
+ 
