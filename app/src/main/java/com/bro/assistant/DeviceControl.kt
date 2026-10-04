@@ -37,7 +37,9 @@ fun tryDeviceCommand(context: Context, spoken: String): String? {
             "I could not use the flashlight"
         }
     }
- 
+
+    tryInstagramCommand(context, spoken)?.let { return it }
+    
     tryCallCommand(context, spoken)?.let { return it }
  
     tryTileCommand(context, spoken)?.let { return it }
