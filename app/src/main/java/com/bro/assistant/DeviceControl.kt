@@ -40,6 +40,8 @@ fun tryDeviceCommand(context: Context, spoken: String): String? {
  
     tryCallCommand(context, spoken)?.let { return it }
  
+    tryTileCommand(context, spoken)?.let { return it }
+ 
     trySettingsCommand(context, spoken)?.let { return it }
  
     tryExtraCommand(context, spoken)?.let { return it }
