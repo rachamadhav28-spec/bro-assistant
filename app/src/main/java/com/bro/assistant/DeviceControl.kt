@@ -38,6 +38,8 @@ fun tryDeviceCommand(context: Context, spoken: String): String? {
         }
     }
 
+    tryCallCommand(context, spoken)?.let { return it }
+
     tryExtraCommand(context, spoken)?.let { return it }
 
     return tryAccessibilityCommand(context, spoken)
