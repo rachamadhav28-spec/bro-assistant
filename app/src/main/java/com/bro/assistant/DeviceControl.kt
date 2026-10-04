@@ -1,5 +1,3 @@
-
-Devicecontrol · KT
 package com.bro.assistant
  
 import android.content.Context
