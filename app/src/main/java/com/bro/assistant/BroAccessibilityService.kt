@@ -5,9 +5,11 @@ import android.accessibilityservice.GestureDescription
 import android.content.Context
 import android.content.Intent
 import android.graphics.Path
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
 
 class BroAccessibilityService : AccessibilityService() {
 
@@ -73,6 +75,121 @@ class BroAccessibilityService : AccessibilityService() {
                 performGlobalAction(GLOBAL_ACTION_HOME)
             }, 600)
         }, 900)
+    }
+
+    // ---------- Quick Settings tile toggling ----------
+
+    fun toggleTile(names: List<String>, wantOn: Boolean?, fallback: Intent?) {
+        performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS)
+        attemptTile(names, wantOn, fallback, 0)
+    }
+
+    private fun attemptTile(names: List<String>, wantOn: Boolean?, fallback: Intent?, attempt: Int) {
+        val delay = if (attempt == 0) 1200L else 700L
+        handler.postDelayed({
+            val done = tryClickTile(names, wantOn)
+            if (done) {
+                handler.postDelayed({ closeShade() }, 600)
+            } else if (attempt < 3) {
+                attemptTile(names, wantOn, fallback, attempt + 1)
+            } else {
+                closeShade()
+                if (fallback != null) {
+                    try {
+                        fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        startActivity(fallback)
+                    } catch (e: Exception) {
+                    }
+                }
+            }
+        }, delay)
+    }
+
+    private fun closeShade() {
+        if (Build.VERSION.SDK_INT >= 31) {
+            performGlobalAction(GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE)
+        } else {
+            performGlobalAction(GLOBAL_ACTION_BACK)
+        }
+    }
+
+    private fun tryClickTile(names: List<String>, wantOn: Boolean?): Boolean {
+        val roots = ArrayList<AccessibilityNodeInfo>()
+        try {
+            for (w in windows) {
+                val r = w.root
+                if (r != null) roots.add(r)
+            }
+        } catch (e: Exception) {
+        }
+        val active = rootInActiveWindow
+        if (active != null) roots.add(active)
+
+        for (root in roots) {
+            val node = findTileNode(root, names, 0) ?: continue
+            val state = readTileState(node)
+            if (wantOn != null && state != null && state == wantOn) {
+                return true
+            }
+            val clickable = findClickableParent(node) ?: continue
+            if (clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun findTileNode(
+        node: AccessibilityNodeInfo,
+        names: List<String>,
+        depth: Int
+    ): AccessibilityNodeInfo? {
+        if (depth > 30) return null
+        val label = (node.text?.toString() ?: "") + " " + (node.contentDescription?.toString() ?: "")
+        val lower = label.lowercase().trim()
+        if (lower.isNotEmpty() && lower.length <= 40 && names.any { lower.contains(it) }) {
+            return node
+        }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findTileNode(child, names, depth + 1)
+            if (found != null) return found
+        }
+        return null
+    }
+
+    private fun findClickableParent(start: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        var n: AccessibilityNodeInfo? = start
+        var depth = 0
+        while (n != null && depth < 5) {
+            if (n.isClickable) return n
+            n = n.parent
+            depth++
+        }
+        return null
+    }
+
+    private fun readTileState(start: AccessibilityNodeInfo): Boolean? {
+        var n: AccessibilityNodeInfo? = start
+        var depth = 0
+        while (n != null && depth < 4) {
+            if (n.isCheckable) return n.isChecked
+            val desc = StringBuilder()
+            if (Build.VERSION.SDK_INT >= 30) {
+                val sd = n.stateDescription
+                if (sd != null) desc.append(sd).append(' ')
+            }
+            val cd = n.contentDescription
+            if (cd != null) desc.append(cd).append(' ')
+            val tx = n.text
+            if (tx != null) desc.append(tx)
+            val parts = desc.toString().lowercase().split(Regex("[^a-z]+"))
+            if (parts.contains("off") || parts.contains("disabled")) return false
+            if (parts.contains("on") || parts.contains("enabled")) return true
+            n = n.parent
+            depth++
+        }
+        return null
     }
 }
 
