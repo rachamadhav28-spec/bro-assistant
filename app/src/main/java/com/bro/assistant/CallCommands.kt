@@ -5,7 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
-import android.provider.ContactsContract
+import android.provider.ContactsContract.CommonDataKinds.Phone
 
 fun tryCallCommand(context: Context, spoken: String): String? {
     val text = spoken.lowercase().trim().removeSuffix(".")
@@ -28,11 +28,10 @@ fun tryCallCommand(context: Context, spoken: String): String? {
         return "Please allow contacts and phone permission, then ask again"
     }
 
-    val phone = ContactsContract.CommonDataKinds.Phone
     val cursor = context.contentResolver.query(
-        phone.CONTENT_URI,
-        arrayOf(phone.DISPLAY_NAME, phone.NUMBER),
-        phone.DISPLAY_NAME + " LIKE ?",
+        Phone.CONTENT_URI,
+        arrayOf(Phone.DISPLAY_NAME, Phone.NUMBER),
+        Phone.DISPLAY_NAME + " LIKE ?",
         arrayOf("%$name%"),
         null
     )
