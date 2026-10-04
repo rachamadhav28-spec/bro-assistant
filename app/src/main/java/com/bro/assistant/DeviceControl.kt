@@ -1,15 +1,17 @@
-package com.bro.assistant
 
+Devicecontrol · KT
+package com.bro.assistant
+ 
 import android.content.Context
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
-
+ 
 private var torchIsOn = false
-
+ 
 fun tryDeviceCommand(context: Context, spoken: String): String? {
     val text = spoken.lowercase().trim().removeSuffix(".")
     val words = text.split(" ").filter { it.isNotBlank() }
-
+ 
     val mentionsLight = words.any { it == "light" || it == "torch" || it == "flashlight" }
     if (mentionsLight && words.size <= 6) {
         val wantsOff = words.any { it == "off" || it == "stop" || it == "close" }
@@ -37,10 +39,13 @@ fun tryDeviceCommand(context: Context, spoken: String): String? {
             "I could not use the flashlight"
         }
     }
-
+ 
     tryCallCommand(context, spoken)?.let { return it }
-
+ 
+    trySettingsCommand(context, spoken)?.let { return it }
+ 
     tryExtraCommand(context, spoken)?.let { return it }
-
+ 
     return tryAccessibilityCommand(context, spoken)
 }
+ 
